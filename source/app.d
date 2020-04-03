@@ -66,21 +66,18 @@ void main() {
 
   writeln("UDP socket created");
 
-  // individual addresses for connections
-  //auto indAddrCfg = getKey(config_prefix ~ "net_ind_addr", "15.15.250", true);
-  auto indAddresses = redisAbs.getList(config_prefix ~ "net_ind_addr", ["15.15.240", "15.15.241"], true);
-  writeln("Reserved individual addresses: ");
-  writeln(indAddresses);
+  // individual address for connections
+  auto ia = redisAbs.getKey(config_prefix ~ "ia", "0.0.0", false);
+  writeln("Reserved individual address: ", ia);
 
-  auto stream_prefix = redisAbs.getKey(config_prefix ~ "stream_prefix", "dobaosll_stream_", true);
-  auto stream_maxlen = redisAbs.getKey(config_prefix ~ "stream_maxlen", "100000", true);
-
+  auto maxConnCntCfg = redisAbs.getKey(config_prefix ~ "net_conn_count", "100", true);
+  auto maxConnCnt = to!int(maxConnCntCfg);
 
   DobaosllClient dobaosll = new DobaosllClient();
 
   // ========================================== //
   KnxNetConnection[] connections;
-  connections.length = indAddresses.length;
+  connections.length = maxConnCnt;
   void queue2socket(int ci) {
     // process queue. send next frames if ack received
     auto data = connections[ci].processQueue();
@@ -94,9 +91,8 @@ void main() {
   }
 
   for (int i = 0; i < connections.length; i += 1) {
-    connections[i].assignIa(indAddresses[i]);
+    connections[i].assignIa(ia);
   }
-  writeln(connections);
 
   // available channel
   int findAvailableChannel() {
