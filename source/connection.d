@@ -38,14 +38,6 @@ struct KnxNetConnection {
   // purpose is to compare when Con frame received
   ubyte[] lastCemiToBaos;
 
-  void assignIa(string iaStr) {
-    auto arr = iaStr.split(".");
-    if (arr.length < 3) return;
-    ubyte main = to!ubyte(arr[0]);
-    ubyte middle = to!ubyte(arr[1]);
-    ubyte group = to!ubyte(arr[2]);
-    ia = to!ushort((((main << 4)|middle) << 8) | group);
-  }
   void increaseSeqId() {
     if (sequence < 255) {
       sequence += 1;

@@ -229,7 +229,7 @@ ubyte[] connectResponseError(ubyte channel, ubyte error) {
 
   return result;
 }
-ubyte[] descriptionResponse() {
+ubyte[] descriptionResponse(ushort ia, ubyte[] serialNumber, ubyte[] macAddress, string friendlyName) {
   ubyte[] result = [];
 
   auto offset = 0; result.length = 255;
@@ -248,33 +248,23 @@ ubyte[] descriptionResponse() {
   offset += 1;
   result.write!ubyte(0x00, offset); // device status
   offset += 1;
-  result.write!ushort(0x00, offset); // knx address
+  result.write!ushort(ia, offset); // knx address
   offset += 2;
   result.write!ushort(0x00, offset); // installation id
   offset += 2;
-  result.write!ubyte(0x11, offset); offset += 1; // serial number
-  result.write!ubyte(0x11, offset); offset += 1; // serial number
-  result.write!ubyte(0x11, offset); offset += 1; // serial number
-  result.write!ubyte(0x11, offset); offset += 1; // serial number
-  result.write!ubyte(0x11, offset); offset += 1; // serial number
-  result.write!ubyte(0x11, offset); offset += 1; // serial number
+  result[offset..offset + 6] = serialNumber[0..6];
+  offset += 6;
   result.write!ubyte(0x00, offset); offset += 1; // multicast addr
   result.write!ubyte(0x00, offset); offset += 1; // multicast addr
   result.write!ubyte(0x00, offset); offset += 1; // multicast addr
   result.write!ubyte(0x00, offset); offset += 1; // multicast addr
-  result.write!ubyte(0x22, offset); offset += 1; // mac address
-  result.write!ubyte(0x22, offset); offset += 1; // mac address
-  result.write!ubyte(0x22, offset); offset += 1; // mac address
-  result.write!ubyte(0x22, offset); offset += 1; // mac address
-  result.write!ubyte(0x22, offset); offset += 1; // mac address
-  result.write!ubyte(0x22, offset); offset += 1; // mac address
+  result[offset..offset + 6] = macAddress[0..6];
+  offset += 6;
 
-  result.write!char('b', offset); // friendly name
-  result.write!char('o', offset+1);
-  result.write!char('b', offset+2);
-  result.write!char('a', offset+3);
-  result.write!char('o', offset+4);
-  result.write!char('s', offset+5);
+  char[] name = friendlyName.dup;
+  for (int i = 0; (i < name.length && i < 30); i += 1) {
+    result.write!char(name[i], offset + i);
+  }
   offset += 30; // lenght of name should be 30 octets
 
   writeln("Length of DEV_INFO section: ", offset);

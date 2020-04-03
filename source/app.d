@@ -1,5 +1,6 @@
 import core.thread;
 import std.algorithm.comparison : equal;
+import std.base64;
 import std.bitmanip;
 import std.conv;
 import std.functional;
@@ -15,8 +16,8 @@ import dobaosll_client;
 import knx;
 import redis_abstractions;
 
-enum CEMI_FROM_BAOS = "from_baos";
-enum CEMI_TO_BAOS = "to_baos";
+// no more than 30 symbols
+enum FRIENDLY_NAME = "dobaos_net";
 
 // struct for commandline params
 private struct Config {
@@ -66,9 +67,30 @@ void main() {
 
   writeln("UDP socket created");
 
+  // serial number of device
+  string snCfg = redisAbs.getKey(config_prefix ~ "sn", "AAAAAAAA", false);
+  auto sn = Base64.decode(snCfg);
+  writefln("Serial number: %(%x:%)", sn);
+
+  string macCfg = redisAbs.getKey(config_prefix ~ "mac", "AAAAAAAA", false);
+  auto mac = Base64.decode(macCfg);
+  writefln("Mac address: %(%x:%)", mac);
+
   // individual address for connections
-  auto ia = redisAbs.getKey(config_prefix ~ "ia", "0.0.0", false);
-  writeln("Reserved individual address: ", ia);
+  auto iaCfg = redisAbs.getKey(config_prefix ~ "ia", "0.0.0", false);
+  writeln("Reserved individual address: ", iaCfg);
+
+  // to convert string "x.y.z" to 2-byte ushort value
+  ushort iaStr2num(string iaStr) {
+    auto arr = iaStr.split(".");
+    if (arr.length < 3) return 0;
+    ubyte main = to!ubyte(arr[0]);
+    ubyte middle = to!ubyte(arr[1]);
+    ubyte group = to!ubyte(arr[2]);
+
+    return to!ushort((((main << 4)|middle) << 8) | group);
+  }
+  auto ia = iaStr2num(iaCfg);
 
   auto maxConnCntCfg = redisAbs.getKey(config_prefix ~ "net_conn_count", "100", true);
   auto maxConnCnt = to!int(maxConnCntCfg);
@@ -91,7 +113,7 @@ void main() {
   }
 
   for (int i = 0; i < connections.length; i += 1) {
-    connections[i].assignIa(ia);
+    connections[i].ia = ia;
   }
 
   // available channel
@@ -265,7 +287,7 @@ void main() {
           }
           break;
         case KNXServices.DESCRIPTION_REQUEST:
-          auto descrFrame = descriptionResponse();
+          auto descrFrame = descriptionResponse(ia, sn, mac, FRIENDLY_NAME);
           sendKNXIPMessage(KNXServices.DESCRIPTION_RESPONSE, descrFrame, s, from);
           break;
         case KNXServices.DEVICE_CONFIGURATION_ACK:
