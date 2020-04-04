@@ -15,7 +15,6 @@ struct KnxNetRequest {
   ubyte[] cemi;
 }
 
-// to store in queue
 struct KnxNetConnection {
   bool active = false;
   Address addr;
@@ -24,6 +23,11 @@ struct KnxNetConnection {
   ubyte sequence = 0x00;
   ubyte outSequence = 0x00;
   ubyte type = KNXConnTypes.TUNNEL_CONNECTION;
+
+  // T_Connections - transport layer connections array
+  // with ind addresses of connections to other devices
+  // restrict no more than one T_Conn to device across KNXNet conns
+  ushort[] TConnections;
 
   // acknowledge for TUN_REQ received? from net client
   bool ackReceived = true;

@@ -1,5 +1,7 @@
 import core.thread;
+import std.algorithm : remove;
 import std.algorithm.comparison : equal;
+import std.algorithm.searching: canFind, countUntil;
 import std.base64;
 import std.bitmanip;
 import std.conv;
@@ -14,6 +16,7 @@ import clid;
 import connection;
 import dobaosll_client;
 import knx;
+import mprop_reader;
 import redis_abstractions;
 
 // no more than 30 symbols
@@ -67,9 +70,9 @@ void main() {
 
   writeln("UDP socket created");
 
+  auto mprop = new MPropReader();
   // serial number of device
-  string snCfg = redisAbs.getKey(config_prefix ~ "sn", "AAAAAAAA", false);
-  auto sn = Base64.decode(snCfg);
+  auto sn = mprop.read(11);
   writefln("Serial number: %(%x:%)", sn);
 
   string macCfg = redisAbs.getKey(config_prefix ~ "mac", "AAAAAAAA", false);
@@ -77,8 +80,8 @@ void main() {
   writefln("Mac address: %(%x:%)", mac);
 
   // individual address for connections
-  auto iaCfg = redisAbs.getKey(config_prefix ~ "ia", "0.0.0", false);
-  writeln("Reserved individual address: ", iaCfg);
+  auto tunIaCfg = redisAbs.getKey(config_prefix ~ "ia", "0.0.0", false);
+  writeln("Reserved individual address: ", tunIaCfg);
 
   // to convert string "x.y.z" to 2-byte ushort value
   ushort iaStr2num(string iaStr) {
@@ -90,7 +93,17 @@ void main() {
 
     return to!ushort((((main << 4)|middle) << 8) | group);
   }
-  auto ia = iaStr2num(iaCfg);
+  auto tunIa = iaStr2num(tunIaCfg);
+  
+  // read baos address
+  auto subnetwork = mprop.read(57)[0];
+  auto deviceAddr = mprop.read(58)[0];
+  ushort realIa = to!ushort(subnetwork << 8 | deviceAddr);
+  auto realIaStr = "";
+  realIaStr ~= to!string(subnetwork >> 4) ~ ".";
+  realIaStr ~= to!string(subnetwork & 0b1111) ~ ".";
+  realIaStr ~= to!string(deviceAddr);
+  writeln("BAOS module individual address: ", realIaStr);
 
   auto maxConnCntCfg = redisAbs.getKey(config_prefix ~ "net_conn_count", "100", true);
   auto maxConnCnt = to!int(maxConnCntCfg);
@@ -109,11 +122,13 @@ void main() {
       connections[ci].lastReq = data;
       writeln("queue2socket sending data: ", data, connections[ci].addr);
       s.sendTo(data, connections[ci].addr);
+      connections[ci].swAck.reset();
+      connections[ci].swAck.start();
     }
   }
 
   for (int i = 0; i < connections.length; i += 1) {
-    connections[i].ia = ia;
+    connections[i].ia = tunIa;
   }
 
   // available channel
@@ -238,7 +253,6 @@ void main() {
             sendKNXIPMessage(KNXServices.CONNECTIONSTATE_RESPONSE, stateFrame, s, from);
           }
           break;
-          // TODO: DISCONNECT_RESPONSE
         case KNXServices.DISCONNECT_RESPONSE:
           writeln("DISCONNECT_RESPONSE");
           auto chId = message.read!ubyte();
@@ -287,7 +301,7 @@ void main() {
           }
           break;
         case KNXServices.DESCRIPTION_REQUEST:
-          auto descrFrame = descriptionResponse(ia, sn, mac, FRIENDLY_NAME);
+          auto descrFrame = descriptionResponse(tunIa, sn, mac, FRIENDLY_NAME);
           sendKNXIPMessage(KNXServices.DESCRIPTION_RESPONSE, descrFrame, s, from);
           break;
         case KNXServices.DEVICE_CONFIGURATION_ACK:
@@ -314,18 +328,12 @@ void main() {
           auto ackSeqId = to!int(seqId);
           auto expSeqId = to!int(connections[chIndex].outSequence);
           writeln("Incoming ACK sequence id: ", ackSeqId, ", expected: ", expSeqId);
-          // TODO: checkings. if not same, repeat/disconnect
           if (ackSeqId == expSeqId) {
             connections[chIndex].increaseOutSeqId();
             connections[chIndex].ackReceived = true;
             connections[chIndex].sentReqCount = 0;
             //connections[chIndex].processQueue();
             queue2socket(chIndex);
-            connections[chIndex].swCon.reset();
-            connections[chIndex].swCon.start();
-            // stop watcher
-            connections[chIndex].swAck.stop();
-            connections[chIndex].swAck.reset();
           }
           break;
         case KNXServices.TUNNELING_REQUEST:
@@ -371,12 +379,22 @@ void main() {
 
             auto offset = 0;
             ubyte mc = cemiFrame.peek!ubyte(offset); offset += 1;
+            auto cf1offset = 0;
+            auto sourceOffset = 0;
+            auto destOffset = 0;
+
+            // TConnect request?
+            bool tconnReq = false;
+            bool tdiscoReq = false;
+            bool sendToBaos = true;
             if (mc == cEMI_MC.LDATA_REQ) {
               // get control fields from cEMI frame
               ubyte addLen = cemiFrame.peek!ubyte(offset); offset += 1;
               offset += to!int(addLen); // pass additional info
+              cf1offset = offset;
               ubyte cf1 = cemiFrame.peek!ubyte(offset); offset += 1;
               ubyte cf2 = cemiFrame.peek!ubyte(offset); offset += 1;
+              sourceOffset = offset;
               ushort source = cemiFrame.peek!ushort(offset); 
               if (source == 0x0000) {
                 // write ia of this connection
@@ -384,26 +402,71 @@ void main() {
                 // no. no need. should send with 0x0000
               }
               offset += 2;
+              destOffset = offset;
               ushort dest = cemiFrame.peek!ushort(offset); offset += 2;
+              ubyte dataLen = cemiFrame.peek!ubyte(offset); offset += 1;
+              ubyte tpci = cemiFrame.peek!ubyte(offset);
+              // if TConnect request
+              tconnReq = (dataLen == 0 && tpci == 0x80);
+              if (tconnReq) {
+                writeln("T_CONNECT request");
+                // check if there is no transport layer connection to this device
+                bool connFound = false;
+                for (auto i = 0; i < connections.length; i += 1) {
+                  connFound = connFound || canFind(connections[i].TConnections, dest);
+                  if (connFound) {
+                    break;
+                  }
+                }
+                sendToBaos = !connFound;
+              }
+              /*** this is wrong.
+              tdiscoReq = (dataLen == 0 && tpci == 0x81);
+              if (tdiscoReq) {
+                for (auto i = 0; i < connections.length; i += 1) {
+                  auto tcIdx = connections[i].TConnections.countUntil(dest);
+                  if (tdiscoReq && tcIdx > -1) {
+                    connections[i].TConnections =connections[i].TConnections.remove(tcIdx);
+                  }
+                }
+              }
+               ***/
             }
 
             // acknowledge receiving request, send back to client
             auto ackFrame = ack(chId, seqId);
             sendKNXIPMessage(resService, ackFrame, s, from);
 
-            writeln("sending to BAOS: ", cemiFrame);
-            // send cemi to BAOS module
-            dobaosll.sendCemi(cemiFrame);
+            if (sendToBaos) {
+              writeln("sending to BAOS: ", cemiFrame);
+              // send cemi to BAOS module
+              dobaosll.sendCemi(cemiFrame);
+              // store last sent frame
+              connections[chIndex].lastCemiToBaos = cemiFrame.dup;
+              writeln("lastCemi = ", connections[chIndex].lastCemiToBaos);
 
-            // store last sent frame
-            connections[chIndex].lastCemiToBaos = cemiFrame.dup;
-            writeln("lastCemi = ", connections[chIndex].lastCemiToBaos);
+              // increase sequence number of connection
+              connections[chIndex].increaseSeqId();
+              // reset timeout stopwatch
+              connections[chIndex].swCon.reset();
+              connections[chIndex].swCon.start();
+            } else if (tconnReq) {
+              // don't send any data to bus
+              // but send back LDataCon.
+              auto response = cemiFrame.dup;
+              response.write!ubyte(cEMI_MC.LDATA_CON, 0);
+              response.write!ubyte(0x9d, cf1offset); // unconfirmed
+              response.write!ushort(tunIa, sourceOffset);
 
-            // increase sequence number of connection
-            connections[chIndex].increaseSeqId();
-            // reset timeout stopwatch
-            connections[chIndex].swCon.reset();
-            connections[chIndex].swCon.start();
+              connections[chIndex].add2queue(KNXServices.TUNNELING_REQUEST , response);
+              queue2socket(chIndex);
+
+              // increase sequence number of connection
+              connections[chIndex].increaseSeqId();
+              // reset timeout stopwatch
+              connections[chIndex].swCon.reset();
+              connections[chIndex].swCon.start();
+            }
           } else if (clientSeqId == expectSeqId - 1) {
             // ACK, discard frame
             // acknowledge receiving request, send back to client
@@ -462,30 +525,57 @@ void main() {
 
     int offset = 0;
     ubyte mc = cemi.peek!ubyte(offset); offset += 1;
-    ubyte addressType = 0;
+    ubyte cf1 = 0x00;
+    ubyte cf2 = 0x00;
+    ubyte addressType = 0x00;
     ushort source = 0x0000;
     ushort dest = 0x0000;
+    ubyte dataLen = 0x00;
+    ubyte tpci = 0x00;
     auto sourceOffset = 0;
-    if (mc == cEMI_MC.LDATA_CON) {
-      writeln("LData.Con frame");
+    auto destOffset = 0;
+    auto tpciOffset = 0;
+    if (mc == cEMI_MC.LDATA_CON || mc == cEMI_MC.LDATA_IND) {
+      if (mc == cEMI_MC.LDATA_CON) {
+        writeln("LData.Con frame");
+      } else {
+        writeln("LData.Ind frame");
+      }
       // get control fields from cEMI frame
       ubyte addLen = cemi.peek!ubyte(offset); offset += 1;
       offset += to!int(addLen); // pass additional info
-      ubyte cf1 = cemi.peek!ubyte(offset); offset += 1;
-      ubyte cf2 = cemi.peek!ubyte(offset); offset += 1;
+      cf1 = cemi.peek!ubyte(offset); offset += 1;
+      cf2 = cemi.peek!ubyte(offset); offset += 1;
       // now, get destination type: group address(1) or physical(0)
       addressType = to!ubyte((cf2 & 0x80) >> 7);
       sourceOffset = offset;
       source = cemi.peek!ushort(offset); offset += 2;
+      destOffset = offset;
       dest = cemi.peek!ushort(offset); offset += 2;
-    } else if (mc == cEMI_MC.LDATA_IND) {
-      writeln("LData.Ind frame");
+      dataLen = cemi.peek!ubyte(offset); offset += 1;
+      tpciOffset = offset;
+      tpci = cemi.peek!ubyte(offset);
     } else if (mc == cEMI_MC.MPROPREAD_CON) {
       writeln("MPropRead.Con frame");
     } else if (mc == cEMI_MC.MPROPWRITE_CON) {
       writeln("MPropWrite.Con frame");
     } else if (mc == cEMI_MC.MPROPINFO_IND) {
       writeln("MPropInfo.Ind frame");
+    } else if (mc == cEMI_MC.MRESET_IND) {
+      writeln("MReset.Ind frame");
+      // free all transport layer connections
+      for (int i = 0; i < connections.length; i += 1) {
+        connections[i].TConnections = null;
+      }
+      // read ia of BAOS MPropRead
+      subnetwork = mprop.read(57)[0];
+      deviceAddr = mprop.read(58)[0];
+      realIa = to!ushort(subnetwork << 8 | deviceAddr);
+      realIaStr = "";
+      realIaStr ~= to!string(subnetwork >> 4) ~ ".";
+      realIaStr ~= to!string(subnetwork & 0b1111) ~ ".";
+      realIaStr ~= to!string(deviceAddr);
+      writeln("BAOS module individual address: ", realIaStr);
     } else {
       writeln("Unknown message code");
     }
@@ -499,30 +589,44 @@ void main() {
           conn.type == KNXConnTypes.TUNNEL_CONNECTION) {
         auto last = connections[i].lastCemiToBaos.dup;
         writeln("comparing with: ", last);
-        auto destOffset = sourceOffset + 2;
         if (last.length == cemi.length && last.length > destOffset + 1) {
           if (equal(last[destOffset..$], cemi[destOffset..$])) {
+            // "patch" addresses
+            if (source == realIa) {
+              cemi.write!ushort(tunIa, sourceOffset);
+            }
             // connection is pending LData.con message, send
             connections[i].add2queue(KNXServices.TUNNELING_REQUEST, cemi);
             queue2socket(i);
-            // start timeout watcher
-            connections[i].swAck.reset();
-            connections[i].swAck.start();
+            
+            // now check if this message is a confirmation for connection
+            // if so, then add to TConnections array
+            bool tconConfirm = (tpci == 0x80 && (cf1 & 0b1) == 0);
+            auto tcIdx = connections[i].TConnections.countUntil(dest);
+            if (tconConfirm) {
+              connections[i].TConnections ~= dest;
+            }
+            // if disconnect confirmation
+            bool discoConfirm = (tpci == 0x81);
+            if (discoConfirm && tcIdx > -1) {
+              connections[i].TConnections =connections[i].TConnections.remove(tcIdx);
+            }
           }
         } else if (addressType == 1) {
           // connection is not pending LData.con message
           // change it to LData.ind and send
-          // BUT only if addressType indicating group address
+          // BUT only if addressType indicating group address (== 0b1);
           cemi.write!ubyte(cEMI_MC.LDATA_IND, 0);
+          // "patch" addresses
+          if (source == realIa) {
+            cemi.write!ushort(tunIa, sourceOffset);
+          }
           connections[i].add2queue(KNXServices.TUNNELING_REQUEST, cemi);
           queue2socket(i);
           // return to LDATA_CON, so, next conn[i] iterations will check correctly
           cemi.write!ubyte(cEMI_MC.LDATA_CON, 0);
           // erase info about last sent cemi data
           connections[i].lastCemiToBaos = [];
-          // start timeout watcher
-          connections[i].swAck.reset();
-          connections[i].swAck.start();
         }
       } else if (mc == cEMI_MC.MPROPREAD_CON &&
         conn.type == KNXConnTypes.DEVICE_MGMT_CONNECTION)  {
@@ -537,9 +641,6 @@ void main() {
             connections[i].add2queue(KNXServices.DEVICE_CONFIGURATION_REQUEST , cemi);
             queue2socket(i);
             connections[i].lastCemiToBaos = [];
-            // start timeout watcher
-            connections[i].swAck.reset();
-            connections[i].swAck.start();
           }
         }
       } else if (mc == cEMI_MC.MPROPWRITE_CON
@@ -547,28 +648,38 @@ void main() {
         // send
         connections[i].add2queue(KNXServices.DEVICE_CONFIGURATION_REQUEST , cemi);
         queue2socket(i);
-        // start timeout watcher
-        connections[i].swAck.reset();
-        connections[i].swAck.start();
       } else {
         //send unchanges to all connections
         if (mc == cEMI_MC.LDATA_IND 
             && conn.type == KNXConnTypes.TUNNEL_CONNECTION) {
           // send only group address? no.
           // LDataInd telegrams, addressed to individual device(BAOS module)
-          // will be sent to all UDP connections. 
-          connections[i].add2queue(KNXServices.TUNNELING_REQUEST , cemi);
-          queue2socket(i);
-          // start timeout watcher
-          connections[i].swAck.reset();
-          connections[i].swAck.start();
+          // will be sent to corresponding UDP connections. 
+          if (addressType == 1) {
+            connections[i].add2queue(KNXServices.TUNNELING_REQUEST , cemi);
+            queue2socket(i);
+          } else {
+            // "patch" addresses
+            if (dest == realIa) {
+              cemi.write!ushort(tunIa, destOffset);
+            }
+            // if disconnect indication
+            bool discoInd = (tpci == 0x81);
+            auto tcIdx = connections[i].TConnections.countUntil(source);
+            if (tcIdx > -1) {
+              if (discoInd) {
+                connections[i].TConnections = connections[i].TConnections.remove(tcIdx);
+              }
+              // in any case send data next to net client
+              connections[i].add2queue(KNXServices.TUNNELING_REQUEST , cemi);
+              queue2socket(i);
+            }
+          }
+
         } else if (mc == cEMI_MC.MPROPINFO_IND 
             && conn.type == KNXConnTypes.DEVICE_MGMT_CONNECTION)  {
           connections[i].add2queue(KNXServices.DEVICE_CONFIGURATION_REQUEST , cemi);
           queue2socket(i);
-          // start timeout watcher
-          connections[i].swAck.reset();
-          connections[i].swAck.start();
         }
       }
     }
