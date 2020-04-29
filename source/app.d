@@ -75,13 +75,13 @@ void main() {
 
   writeln("UDP socket created");
 
-  string macCfg = redisAbs.getKey(config_prefix ~ "mac", "AAAAAAAA", false);
+  string macCfg = redisAbs.getKey(config_prefix ~ "mac", "AAAAAAAA", true);
   auto mac = Base64.decode(macCfg);
   writefln("Mac address: %(%x:%)", mac);
 
   // individual address for connections
-  auto tunIaCfg = redisAbs.getKey(config_prefix ~ "ia", "15.15.200", false);
-  writeln("Reserved individual addresse: ", tunIaCfg);
+  auto tunIaCfg = redisAbs.getKey(config_prefix ~ "ia", "15.15.200", true);
+  writeln("Reserved individual address: ", tunIaCfg);
   auto tunIa = iaStr2num(tunIaCfg);
 
   auto mprop = new MPropReader();

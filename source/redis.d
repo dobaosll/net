@@ -14,7 +14,6 @@ class MyRedisAbstraction {
   }
   public string setKey(string key, string value) {
     auto cmd  = "SET " ~ key ~ " " ~ value;
-    writeln(cmd);
     return redis.send(cmd).toString();
   }
   public string getKey(string key) {
