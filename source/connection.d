@@ -24,11 +24,6 @@ struct KnxNetConnection {
   ubyte outSequence = 0x00;
   ubyte type = KNXConnTypes.TUNNEL_CONNECTION;
 
-  // T_Connections - transport layer connections array
-  // with ind addresses of connections to other devices
-  // restrict no more than one T_Conn to device across KNXNet conns
-  ushort[] TConnections;
-
   // acknowledge for TUN_REQ received? from net client
   bool ackReceived = true;
   int sentReqCount = 0;
@@ -37,6 +32,8 @@ struct KnxNetConnection {
   // timeout watcher
   StopWatch swCon; // 120s inactivity
   StopWatch swAck; // 1s for request ack
+
+  StopWatch[ushort] tconns;
 
   // last data sent to baos.
   // purpose is to compare when Con frame received
@@ -62,7 +59,6 @@ struct KnxNetConnection {
     ubyte[] res;
     if (ackReceived) {
       if (queue.length > 0) {
-        writeln("processQueue 1: ", queue);
         KnxNetRequest item = queue[0];
         if (queue.length > 1) {
           queue = queue[1..$];
@@ -70,7 +66,6 @@ struct KnxNetConnection {
           queue = [];
           queue.length = 0;
         }
-        writeln("processQueue 2: ", queue);
         ubyte[] frame = request(item.cemi, channel, outSequence);
         ubyte[] req = KNXIPMessage(item.service, frame);
 
@@ -82,6 +77,5 @@ struct KnxNetConnection {
   }
   void add2queue(ushort service, ubyte[] cemi) {
     queue ~= KnxNetRequest(service, cemi);
-    writeln("added to queue. queue: ", queue);
   }
 }

@@ -1,6 +1,7 @@
 module knx;
 
 import std.conv;
+import std.digest;
 import std.bitmanip;
 import std.range.primitives: empty;
 import std.socket;
@@ -267,7 +268,7 @@ ubyte[] descriptionResponse(ushort ia, ubyte[] serialNumber, ubyte[] macAddress,
   }
   offset += 30; // lenght of name should be 30 octets
 
-  writeln("Length of DEV_INFO section: ", offset);
+  // writeln("Length of DEV_INFO section: ", offset);
   result.write!ubyte(cast(ubyte)offset, 0); // write len at 0 position
 
   // supported services
@@ -314,7 +315,7 @@ ubyte[] sendKNXIPMessage(ushort service, ubyte[] message, UdpSocket s, Address s
     writeln("SendTo is null");
     return [];
   }
-  writeln("Sending: ", dgram," to:: ", sendTo);
+  writeln("Sending: ", dgram.toHexString()," to:: ", sendTo);
   s.sendTo(dgram, sendTo);
 
   return dgram;

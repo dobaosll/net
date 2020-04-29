@@ -2,6 +2,7 @@ import core.thread;
 import std.algorithm: equal;
 import std.bitmanip;
 import std.conv;
+import std.datetime.stopwatch;
 import std.functional;
 
 import dobaosll_client;
@@ -14,7 +15,6 @@ class MPropReader {
   private ubyte[] lastRequest;
   private ubyte[] responseData;
   private bool resolved = false;
-
 
   this() {
     dobaosll = new DobaosllClient();
@@ -36,7 +36,8 @@ class MPropReader {
     dobaosll.onCemi(toDelegate(&onCemiFrame));
 
   }
-  public ubyte[] read(ubyte id, int num = 1, ushort si = 0x0001) {
+  public ubyte[] read(ubyte id, int num = 1, 
+      ushort si = 0x0001, Duration time = 1000.msecs) {
     ubyte[] request;
     request.length = 7;
     request.write!ubyte(cEMI_MC.MPROPREAD_REQ, 0);
@@ -48,10 +49,17 @@ class MPropReader {
 
     lastRequest = request.dup;
     dobaosll.sendCemi(request);
-    while (!resolved) {
+    bool timeout = false;
+    StopWatch sw = StopWatch(AutoStart.yes);
+    while (!resolved && !timeout) {
+      timeout = sw.peek() > time;
       dobaosll.processMessages();
       Thread.sleep(1.msecs);
     }
+    if (timeout) {
+      throw new Exception("ERR_TIMEOUT");
+    }
+    sw.stop();
     auto result = responseData.dup;
     lastRequest = [];
     responseData = [];

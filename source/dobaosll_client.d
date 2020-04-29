@@ -140,7 +140,6 @@ class DobaosllClient {
 
     return response;
   }
-
   public JSONValue commonRequest(string method, JSONValue payload) {
     return commonRequest(req_channel, method, payload);
   }
