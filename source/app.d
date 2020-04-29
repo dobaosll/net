@@ -38,7 +38,7 @@ private struct Config {
     string udp_addr;
 
   @Parameter("port", 'p')
-    @Description("UDP port. Default: 3679")
+    @Description("UDP port. Default: 3671")
     ushort port;
 }
 
@@ -538,7 +538,6 @@ void main() {
         try {
           // serial number of device
           sn = mprop.read(11);
-          writefln("Serial number: %s", sn.toHexString());
           subnetwork = mprop.read(57)[0];
           deviceAddr = mprop.read(58)[0];
           mprop_readed = true;
