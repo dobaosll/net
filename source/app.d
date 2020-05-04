@@ -619,10 +619,7 @@ void main() {
             connections[i].add2queue(KNXServices.TUNNELING_REQUEST , cemi);
             queue2socket(i);
           } else {
-            if (parsed.tservice == TService.TDisconnect &&
-                !parsed.error) {
-              connections[i].tconns.remove(parsed.dest);
-            }
+            
             if (parsed.tservice == TService.TDisconnect || 
                 parsed.tservice == TService.TAck ||
                 parsed.tservice == TService.TNack ||
@@ -631,6 +628,9 @@ void main() {
                 connections[i].add2queue(KNXServices.TUNNELING_REQUEST , cemi);
                 queue2socket(i);
                 connections[i].tconns[parsed.source].reset();
+                if (parsed.tservice == TService.TDisconnect) {
+                  connections[i].tconns.remove(parsed.source);
+                }
               }
             }
           }
